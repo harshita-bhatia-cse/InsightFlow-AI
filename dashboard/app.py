@@ -3,10 +3,48 @@ import plotly.express as px
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from streamlit_local_storage import LocalStorage
 
 API_URL = "http://127.0.0.1:8000"
 st.set_page_config(page_title="InsightFlow AI", page_icon="📊", layout="wide")
 
+local_storage = LocalStorage()
+HISTORY_KEY = "insightflow_upload_history"
+
+
+def get_upload_history() -> list[dict]:
+    stored_history = local_storage.getItem(HISTORY_KEY)
+
+    if not stored_history:
+        return []
+
+    if isinstance(stored_history, list):
+        return stored_history
+
+    return []
+
+
+def save_upload_history(upload_result: dict, project_id: int) -> None:
+    history = get_upload_history()
+
+    history.insert(
+        0,
+        {
+            "filename": upload_result.get("filename", "Unknown file"),
+            "dataset_id": upload_result.get("dataset_id"),
+            "project_id": project_id,
+            "quality_status": upload_result.get(
+                "quality_status",
+                "Processed",
+            ),
+        },
+    )
+
+    local_storage.setItem(HISTORY_KEY, history)
+
+
+def clear_upload_history() -> None:
+    local_storage.deleteItem(HISTORY_KEY)
 
 def auth_headers():
     token = st.session_state.get("access_token")
@@ -64,6 +102,67 @@ def login(email: str, password: str) -> bool:
     except requests.RequestException as error:
         st.error(f"Login failed: {error}")
         return False
+
+def register(
+    email: str,
+    username: str,
+    password: str,
+    confirm_password: str,
+) -> bool:
+    if not email.strip():
+        st.error("Email is required.")
+        return False
+
+    if not username.strip():
+        st.error("Username is required.")
+        return False
+
+    if not password:
+        st.error("Password is required.")
+        return False
+
+    if password != confirm_password:
+        st.error("Passwords do not match.")
+        return False
+
+    if len(password) < 8:
+        st.error("Password must contain at least 8 characters.")
+        return False
+
+    try:
+        response = requests.post(
+            f"{API_URL}/auth/register",
+            json={
+                "email": email.strip(),
+                "username": username.strip(),
+                "password": password,
+                "role": "viewer",
+            },
+            timeout=15,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        if error.response is not None:
+            try:
+                detail = error.response.json().get(
+                    "detail",
+                    "Registration failed.",
+                )
+            except ValueError:
+                detail = "Registration failed."
+
+            st.error(f"Registration failed: {detail}")
+        else:
+            st.error(f"Registration failed: {error}")
+
+        return False
+
+    st.success(
+        "Account created successfully. "
+        "Please sign in with your new account."
+    )
+
+    return True
 
     data = response.json()
     st.session_state["access_token"] = data["access_token"]
@@ -141,14 +240,57 @@ st.title("InsightFlow AI")
 st.caption("Executive Analytics Dashboard")
 
 if "access_token" not in st.session_state:
-    st.subheader("Sign in")
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Sign in")
+    st.subheader("Welcome to InsightFlow AI")
 
-    if submitted and login(email, password):
-        st.rerun()
+    auth_mode = st.radio(
+        "Choose an option",
+        ["Sign in", "Sign up"],
+        horizontal=True,
+    )
+
+    if auth_mode == "Sign in":
+        with st.form("login_form"):
+            email = st.text_input(
+                "Email",
+                placeholder="you@example.com",
+            )
+            password = st.text_input(
+                "Password",
+                type="password",
+            )
+            submitted = st.form_submit_button("Sign in")
+
+        if submitted and login(email, password):
+            st.rerun()
+
+    else:
+        with st.form("signup_form"):
+            username = st.text_input(
+                "Username",
+                placeholder="your username",
+            )
+            email = st.text_input(
+                "Email",
+                placeholder="you@example.com",
+            )
+            password = st.text_input(
+                "Password",
+                type="password",
+            )
+            confirm_password = st.text_input(
+                "Confirm password",
+                type="password",
+            )
+            submitted = st.form_submit_button("Create account")
+
+        if submitted and register(
+            email=email,
+            username=username,
+            password=password,
+            confirm_password=confirm_password,
+        ):
+            st.rerun()
+
     st.stop()
 
 current_user = st.session_state["current_user"]
@@ -206,16 +348,43 @@ if st.sidebar.button(
     upload_result = upload_csv(uploaded_file)
 
     if upload_result is not None:
+        save_upload_history(
+            upload_result=upload_result,
+            project_id=selected_project_id,
+        )
+
         st.sidebar.success(
             f"Processed {upload_result['filename']} "
             f"({upload_result['quality_status']})."
         )
+
         st.cache_data.clear()
         st.rerun()
 
 if st.sidebar.button("Refresh data"):
     st.cache_data.clear()
     st.rerun()
+
+st.sidebar.subheader("Upload history")
+
+upload_history = get_upload_history()
+
+if not upload_history:
+    st.sidebar.caption("No uploads saved in this browser.")
+else:
+    for item in upload_history[:10]:
+        filename = item.get("filename", "Unknown file")
+        status = item.get("quality_status", "Processed")
+
+        st.sidebar.write(f"**{filename}**")
+        st.sidebar.caption(status)
+
+    if st.sidebar.button("Clear browser history"):
+        clear_upload_history()
+        st.rerun()    
+
+
+    
 
 datasets = api("/api/datasets")
 if not datasets:

@@ -88,6 +88,35 @@ MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 PROCESSED_DIR = Path("data/processed")
 QUARANTINE_DIR = Path("data/quarantine")
 
+
+def provision_personal_project(user: User) -> None:
+    """Create the initial workspace and project for a new account."""
+    database_session = SessionLocal()
+
+    try:
+        workspace = Workspace(
+            name=f"{user.username}'s Workspace",
+            description="Personal InsightFlow workspace",
+            owner_id=user.id,
+        )
+        database_session.add(workspace)
+        database_session.flush()
+
+        database_session.add(
+            Project(
+                name="My First Project",
+                description="Personal analytics project",
+                workspace_id=workspace.id,
+            )
+        )
+        database_session.commit()
+    except Exception:
+        database_session.rollback()
+        raise
+    finally:
+        database_session.close()
+
+
 @app.get("/")
 def home():
     return {"message": "Welcome to InsightFlow AI"}
@@ -106,6 +135,8 @@ def register_user_route(payload: RegisterRequest):
         password=payload.password,
         role=payload.role,
     )
+    provision_personal_project(user)
+
     return {
         "access_token": create_access_token(user),
         "token_type": "bearer",
