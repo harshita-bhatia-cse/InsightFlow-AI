@@ -38,6 +38,7 @@
 - `app/database/models.py`
 - `alembic/versions/20261118_001_create_initial_schema_baseline.py`
 - `alembic/versions/20261118_002_password_reset_tokens.py`
+- `requirements.txt` — includes `httpx2` required by FastAPI/Starlette test client
 - `tests/test_migrations.py`
 - `tests/test_auth.py`
 - `tests/conftest.py`
