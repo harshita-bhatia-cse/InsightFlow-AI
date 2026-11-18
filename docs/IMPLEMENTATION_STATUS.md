@@ -66,6 +66,9 @@
 
 - Dynamic dataset tables are intentionally outside migration ownership.
 - The initial downgrade is a data-safe no-op.
+- Revision `20261118_002` is check-first because the baseline creates static
+  tables with `create_all()`; this prevents duplicate-table failures during
+  CI downgrade/re-upgrade cycles.
 - In-process rate limiting needs a shared store for multiple API workers.
 - Development/test password-reset responses expose the reset token; no external
   email provider is configured.

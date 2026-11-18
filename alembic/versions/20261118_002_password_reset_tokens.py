@@ -9,6 +9,7 @@ from typing import Sequence
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 
 
 revision: str = "20261118_002"
@@ -18,6 +19,11 @@ depends_on: Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    table_names = set(inspect(bind).get_table_names())
+    if "password_reset_tokens" in table_names:
+        return
+
     op.create_table(
         "password_reset_tokens",
         sa.Column("id", sa.Integer(), primary_key=True),
