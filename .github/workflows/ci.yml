@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: insightflow_ai_db
+          POSTGRES_USER: insightflow
+          POSTGRES_PASSWORD: insightflow-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U insightflow -d insightflow_ai_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://insightflow:insightflow-test-password@localhost:5432/insightflow_ai_db
+      APP_ENV: test
+      APP_SECRET_KEY: ci-test-secret-key-that-is-long-enough
+      AUTO_CREATE_SCHEMA: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python
+        run: python -m compileall -q app alembic
+      - name: Validate fresh-database migrations
+        run: |
+          python -m alembic upgrade head
+          python -m alembic current
+          python -m alembic downgrade base
+          python -m alembic upgrade head
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Build container
+        run: docker build --tag insightflow-ci .

@@ -244,6 +244,23 @@ def test_project_member_can_view_project_dataset():
     assert get_response.status_code == 200
     assert get_response.json()["id"] == dataset_id
 
+    project_response = client.get(
+        f"/api/projects/{project_id}",
+        headers=member_headers,
+    )
+    assert project_response.status_code == 200
+    assert project_response.json()["id"] == project_id
+
+    project_list_response = client.get(
+        "/api/projects",
+        headers=member_headers,
+    )
+    assert project_list_response.status_code == 200
+    assert any(
+        project["id"] == project_id
+        for project in project_list_response.json()
+    )
+
 
 def test_viewer_cannot_upload_to_project():
     owner_headers, _ = register_user_and_get_headers(
@@ -373,6 +390,45 @@ def test_project_member_can_view_analytics_but_unrelated_user_cannot():
     assert unrelated_response.json()["detail"] == (
         "Dataset not found."
     )
+
+
+def test_user_cannot_reassign_another_users_dataset():
+    source_owner_headers, _ = register_user_and_get_headers(
+        "dataset_source_owner"
+    )
+    target_owner_headers, _ = register_user_and_get_headers(
+        "dataset_target_owner"
+    )
+
+    source_project_id = create_workspace_and_project(source_owner_headers)
+    dataset_id = upload_test_dataset(
+        headers=source_owner_headers,
+        project_id=source_project_id,
+    )
+
+    target_workspace_response = client.post(
+        "/api/workspaces",
+        headers=target_owner_headers,
+        json={"name": "Target Workspace"},
+    )
+    assert target_workspace_response.status_code == 201
+    target_project_response = client.post(
+        "/api/projects",
+        headers=target_owner_headers,
+        json={
+            "name": "Target Project",
+            "workspace_id": target_workspace_response.json()["id"],
+        },
+    )
+    assert target_project_response.status_code == 201
+    target_project_id = target_project_response.json()["id"]
+
+    reassignment_response = client.patch(
+        f"/api/datasets/{dataset_id}/project",
+        headers=target_owner_headers,
+        json={"project_id": target_project_id},
+    )
+    assert reassignment_response.status_code == 404
 
 
 def test_legacy_dataset_routes_require_project_access():

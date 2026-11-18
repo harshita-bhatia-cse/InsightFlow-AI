@@ -3,6 +3,8 @@ import uuid
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.database.connection import SessionLocal
+from app.database.models import AuditEvent
 
 
 client = TestClient(app)
@@ -138,6 +140,30 @@ def test_owner_can_manage_project_members():
     # Keep the variable meaningful while confirming the owner account exists.
     assert owner_id > 0
     assert member_headers["Authorization"].startswith("Bearer ")
+
+    session = SessionLocal()
+    try:
+        actions = {
+            action
+            for (action,) in session.query(AuditEvent.action)
+            .filter(
+                AuditEvent.action.in_(
+                    [
+                        "project.member_add",
+                        "project.member_role_change",
+                        "project.member_remove",
+                    ]
+                )
+            )
+            .all()
+        }
+        assert actions == {
+            "project.member_add",
+            "project.member_role_change",
+            "project.member_remove",
+        }
+    finally:
+        session.close()
 
 
 def test_duplicate_project_member_is_rejected():

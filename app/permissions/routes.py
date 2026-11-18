@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -10,6 +10,7 @@ from app.permissions.schemas import (
     ProjectMemberRoleUpdate,
 )
 from app.permissions.services import ProjectPermissionService
+from app.audit.service import record_event
 
 
 router = APIRouter()
@@ -53,6 +54,7 @@ def require_project_owner(
 def add_project_member(
     project_id: int,
     payload: ProjectMemberCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -89,6 +91,18 @@ def add_project_member(
             detail="Project member could not be created.",
         )
 
+    record_event(
+        db,
+        actor_user_id=current_user.id,
+        action="project.member_add",
+        resource_type="project_member",
+        resource_id=str(member.id),
+        outcome="success",
+        request_id=request.state.request_id,
+        metadata={"project_id": project_id, "user_id": payload.user_id, "role": payload.role},
+    )
+    db.commit()
+
     return member
 
 
@@ -118,6 +132,7 @@ def update_project_member_role(
     project_id: int,
     user_id: int,
     payload: ProjectMemberRoleUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -134,10 +149,30 @@ def update_project_member_role(
     )
 
     if member is None:
+        if (
+            service.get_member(project_id=project_id, user_id=user_id)
+            is not None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The final project owner cannot be demoted.",
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project member not found.",
         )
+
+    record_event(
+        db,
+        actor_user_id=current_user.id,
+        action="project.member_role_change",
+        resource_type="project_member",
+        resource_id=str(member.id),
+        outcome="success",
+        request_id=request.state.request_id,
+        metadata={"project_id": project_id, "user_id": user_id, "role": payload.role},
+    )
+    db.commit()
 
     return member
 
@@ -149,6 +184,7 @@ def update_project_member_role(
 def remove_project_member(
     project_id: int,
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -164,9 +200,30 @@ def remove_project_member(
     )
 
     if not removed:
+        member = service.get_member(
+            project_id=project_id,
+            user_id=user_id,
+        )
+        if member is not None and member.role == "owner":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The final project owner cannot be removed.",
+            )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project member not found.",
         )
+
+    record_event(
+        db,
+        actor_user_id=current_user.id,
+        action="project.member_remove",
+        resource_type="project_member",
+        resource_id=f"{project_id}:{user_id}",
+        outcome="success",
+        request_id=request.state.request_id,
+        metadata={"project_id": project_id, "user_id": user_id},
+    )
+    db.commit()
 
     return None

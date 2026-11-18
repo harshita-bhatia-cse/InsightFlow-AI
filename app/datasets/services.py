@@ -82,6 +82,19 @@ class DatasetService:
         if dataset is None:
             return None
 
+        if dataset.project_id is not None:
+            source_project = (
+                self.db.query(Project)
+                .join(Workspace, Project.workspace_id == Workspace.id)
+                .filter(
+                    Project.id == dataset.project_id,
+                    Workspace.owner_id == owner_id,
+                )
+                .first()
+            )
+            if source_project is None:
+                return None
+
         dataset.project_id = project_id
 
         self.db.commit()

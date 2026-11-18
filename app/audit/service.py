@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+from typing import Any
+
+from sqlalchemy.orm import Session
+
+from app.database.models import AuditEvent
+
+
+def record_event(
+    db: Session,
+    *,
+    actor_user_id: int | None,
+    action: str,
+    resource_type: str,
+    resource_id: str | None,
+    outcome: str,
+    request_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> AuditEvent:
+    event = AuditEvent(
+        actor_user_id=actor_user_id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        outcome=outcome,
+        request_id=request_id,
+        metadata_json=metadata or {},
+    )
+    db.add(event)
+    return event

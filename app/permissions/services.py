@@ -190,6 +190,13 @@ class ProjectPermissionService:
         if member is None:
             return None
 
+        if (
+            member.role == "owner"
+            and role != "owner"
+            and self._owner_member_count(project_id) <= 1
+        ):
+            return None
+
         member.role = role
 
         self.db.commit()
@@ -210,7 +217,20 @@ class ProjectPermissionService:
         if member is None:
             return False
 
+        if member.role == "owner" and self._owner_member_count(project_id) <= 1:
+            return False
+
         self.db.delete(member)
         self.db.commit()
 
         return True
+
+    def _owner_member_count(self, project_id: int) -> int:
+        return (
+            self.db.query(ProjectMember)
+            .filter(
+                ProjectMember.project_id == project_id,
+                ProjectMember.role == "owner",
+            )
+            .count()
+        )

@@ -3,8 +3,9 @@ from io import BytesIO
 from pathlib import Path
 import uuid
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
+from sqlalchemy.exc import SQLAlchemyError
 
 from sqlalchemy import text
 
@@ -32,22 +33,34 @@ from app.database.profile_repository import DatasetProfileRepository
 from app.analytics.engine import AnalyticsEngine
 from app.orchestration.processor import AnalyticsWorkflowOrchestrator
 from app.permissions.services import ProjectPermissionService
+from app.audit.service import record_event
 from app.auth import (
     authenticate_user,
     create_access_token,
     get_current_user,
+    issue_refresh_token,
+    enforce_auth_rate_limit,
+    request_password_reset,
+    reset_password,
     require_roles,
     register_user,
+    revoke_refresh_token,
+    rotate_refresh_token,
 )
+from app.config.settings import settings
 from app.schemas import (
     AuthTokenResponse,
+    AdminUserRoleUpdate,
     InsightsResponse,
     KPIResponse,
     LoginRequest,
+    PasswordResetConfirmRequest,
+    PasswordResetRequest,
     ProfileResponse,
     QualityResponse,
     RecommendationsResponse,
     RegisterRequest,
+    RefreshTokenRequest,
     StatisticsResponse,
     TrendResponse,
     UserResponse,
@@ -59,6 +72,15 @@ app = FastAPI(
     version="0.2.0",
 )
 
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
 app.include_router(workspace_router, prefix="/api/workspaces", tags=["workspaces"])
 app.include_router(project_router, prefix="/api/projects", tags=["projects"])
 app.include_router(dataset_router, prefix="/api/datasets", tags=["datasets"])
@@ -68,7 +90,8 @@ app.include_router(
     tags=["permissions"],
 )
 
-Base.metadata.create_all(bind=engine)
+if settings.auto_create_schema:
+    Base.metadata.create_all(bind=engine)
 # This is our first Data Contract:
 # fields the business considers mandatory for a usable task record.
 REQUIRED_COLUMNS = ["Task_ID", "Status"]
@@ -84,7 +107,7 @@ EXPECTED_COLUMNS = [
 ]
 
 # Prevent very large files from consuming too much server memory.
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_FILE_SIZE_BYTES = settings.max_upload_size_mb * 1024 * 1024
 PROCESSED_DIR = Path("data/processed")
 QUARANTINE_DIR = Path("data/quarantine")
 
@@ -127,18 +150,40 @@ def health_check():
     return {"status": "healthy"}
 
 
+@app.get("/health/live")
+def liveness_check():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+def readiness_check():
+    try:
+        with engine.connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except SQLAlchemyError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Database is not ready.",
+        ) from error
+
+    return {"status": "ready"}
+
+
 @app.post("/auth/register", response_model=AuthTokenResponse)
-def register_user_route(payload: RegisterRequest):
+def register_user_route(request: Request, payload: RegisterRequest):
+    enforce_auth_rate_limit(request, "register")
     user = register_user(
         email=payload.email,
         username=payload.username,
         password=payload.password,
-        role=payload.role,
+        role="viewer",
+        request_id=request.state.request_id,
     )
     provision_personal_project(user)
 
     return {
         "access_token": create_access_token(user),
+        "refresh_token": issue_refresh_token(user.id),
         "token_type": "bearer",
         "user": {
             "id": user.id,
@@ -150,13 +195,19 @@ def register_user_route(payload: RegisterRequest):
 
 
 @app.post("/auth/login", response_model=AuthTokenResponse)
-def login_user_route(payload: LoginRequest):
-    user = authenticate_user(payload.email, payload.password)
+def login_user_route(request: Request, payload: LoginRequest):
+    enforce_auth_rate_limit(request, "login")
+    user = authenticate_user(
+        payload.email,
+        payload.password,
+        request_id=request.state.request_id,
+    )
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid email or password.")
 
     return {
         "access_token": create_access_token(user),
+        "refresh_token": issue_refresh_token(user.id),
         "token_type": "bearer",
         "user": {
             "id": user.id,
@@ -165,6 +216,75 @@ def login_user_route(payload: LoginRequest):
             "role": user.role,
         },
     }
+
+
+@app.post("/auth/refresh", response_model=AuthTokenResponse)
+def refresh_access_token_route(
+    request: Request,
+    payload: RefreshTokenRequest,
+):
+    enforce_auth_rate_limit(request, "refresh")
+    user, refresh_token = rotate_refresh_token(payload.refresh_token)
+    return {
+        "access_token": create_access_token(user),
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "email": user.email,
+            "username": user.username,
+            "role": user.role,
+        },
+    }
+
+
+@app.post("/auth/logout", status_code=204)
+def logout_route(request: Request, payload: RefreshTokenRequest):
+    revoke_refresh_token(
+        payload.refresh_token,
+        request_id=request.state.request_id,
+    )
+    return None
+
+
+@app.post("/auth/password-reset/request")
+def password_reset_request_route(
+    request: Request,
+    payload: PasswordResetRequest,
+):
+    enforce_auth_rate_limit(request, "password_reset_request")
+    reset_token = request_password_reset(
+        payload.email,
+        request_id=request.state.request_id,
+    )
+    response = {
+        "message": (
+            "If an account exists for that email, "
+            "password reset instructions have been issued."
+        )
+    }
+    if reset_token is not None and settings.app_environment != "production":
+        response["reset_token"] = reset_token
+    return response
+
+
+@app.post("/auth/password-reset/confirm")
+def password_reset_confirm_route(
+    request: Request,
+    payload: PasswordResetConfirmRequest,
+):
+    enforce_auth_rate_limit(request, "password_reset_confirm")
+    was_reset = reset_password(
+        payload.reset_token,
+        payload.new_password,
+        request_id=request.state.request_id,
+    )
+    if not was_reset:
+        raise HTTPException(
+            status_code=400,
+            detail="Reset token is invalid or expired.",
+        )
+    return {"message": "Password reset successful."}
 
 
 @app.get("/auth/me", response_model=UserResponse)
@@ -191,6 +311,42 @@ def list_users_route(current_user: User = Depends(require_roles("admin"))):
             }
             for user in users
         ]
+    finally:
+        database_session.close()
+
+
+@app.patch("/admin/users/{user_id}/role", response_model=UserResponse)
+def update_user_role_route(
+    user_id: int,
+    payload: AdminUserRoleUpdate,
+    current_user: User = Depends(require_roles("admin")),
+):
+    allowed_roles = {"admin", "analyst", "viewer", "uploader"}
+    if payload.role not in allowed_roles:
+        raise HTTPException(status_code=422, detail="Unsupported role.")
+
+    database_session = SessionLocal()
+    try:
+        user = database_session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+
+        previous_role = user.role
+        user.role = payload.role
+        from app.audit.service import record_event
+
+        record_event(
+            database_session,
+            actor_user_id=current_user.id,
+            action="admin.user_role_change",
+            resource_type="user",
+            resource_id=str(user.id),
+            outcome="success",
+            metadata={"previous_role": previous_role, "new_role": payload.role},
+        )
+        database_session.commit()
+        database_session.refresh(user)
+        return user
     finally:
         database_session.close()
 
@@ -408,6 +564,7 @@ def dataframe_preview(dataframe: pd.DataFrame) -> list:
 
 @app.post("/upload")
 async def upload_csv(
+    request: Request,
     file: UploadFile = File(...),
     project_id: int = Form(...),
     current_user: User = Depends(get_current_user),
@@ -619,7 +776,21 @@ async def upload_csv(
             dataset_version
         )
 
-
+        record_event(
+            database_session,
+            actor_user_id=current_user.id,
+            action="dataset.upload",
+            resource_type="dataset",
+            resource_id=str(dataset.id),
+            outcome="success",
+            request_id=request.state.request_id,
+            metadata={
+                "project_id": project_id,
+                "run_id": run_id,
+                "filename": file.filename,
+                "version_number": next_version_number,
+            },
+        )
         database_session.commit()
 
     except Exception as error:
@@ -679,7 +850,11 @@ async def upload_csv(
 
 
 @app.get("/downloads/{run_id}/{dataset_type}")
-def download_dataset(run_id: str, dataset_type: str):
+def download_dataset(
+    run_id: str,
+    dataset_type: str,
+    current_user: User = Depends(get_current_user),
+):
     try:
         safe_run_id = str(uuid.UUID(run_id))
     except ValueError:
@@ -713,6 +888,22 @@ def download_dataset(run_id: str, dataset_type: str):
             detail="Dataset file not found."
         )
 
+    database_session = SessionLocal()
+    try:
+        dataset_version = (
+            database_session.query(DatasetVersion)
+            .filter(DatasetVersion.run_id == safe_run_id)
+            .first()
+        )
+        if dataset_version is None:
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        require_dataset_view_access(
+            dataset_id=dataset_version.dataset_id,
+            current_user=current_user,
+        )
+    finally:
+        database_session.close()
+
     return FileResponse(
         path=file_path,
         filename=download_name,
@@ -720,27 +911,50 @@ def download_dataset(run_id: str, dataset_type: str):
     )
 
 @app.get("/database-health")
-def database_health():
+def database_health(current_user: User = Depends(get_current_user)):
+    del current_user
     with engine.connect() as connection:
-        database_name = connection.execute(
-            text("SELECT current_database()")
-        ).scalar_one()
+        connection.execute(text("SELECT 1"))
 
     return {
         "status": "connected",
-        "database": database_name
     }
 @app.get("/pipeline-runs")
-def get_pipeline_runs():
+def get_pipeline_runs(
+    current_user: User = Depends(get_current_user),
+):
 
     database_session = SessionLocal()
 
     try:
-        runs = database_session.query(
-            PipelineRun
-        ).all()
+        run_project_rows = (
+            database_session.query(
+                DatasetVersion.run_id,
+                Dataset.project_id,
+            )
+            .join(Dataset, DatasetVersion.dataset_id == Dataset.id)
+            .filter(Dataset.project_id.is_not(None))
+            .all()
+        )
+        run_project_ids: dict[str, set[int]] = {}
+        for run_id, project_id in run_project_rows:
+            run_project_ids.setdefault(run_id, set()).add(project_id)
 
-        return runs
+        runs = database_session.query(PipelineRun).filter(
+            PipelineRun.id.in_(run_project_ids)
+        ).all()
+        permission_service = ProjectPermissionService(database_session)
+        return [
+            run
+            for run in runs
+            if any(
+                permission_service.user_can_view_project(
+                    project_id=project_id,
+                    user_id=current_user.id,
+                )
+                for project_id in run_project_ids[run.id]
+            )
+        ]
 
     finally:
         database_session.close()
@@ -957,7 +1171,10 @@ def get_dataset_recommendations(
 
 
 @app.get("/dataset-versions/{filename}")
-def get_dataset_versions(filename: str):
+def get_dataset_versions(
+    filename: str,
+    current_user: User = Depends(get_current_user),
+):
     database_session = SessionLocal()
 
     try:
@@ -965,8 +1182,10 @@ def get_dataset_versions(filename: str):
             database_session.query(
                 DatasetVersion
             )
+            .join(Dataset, DatasetVersion.dataset_id == Dataset.id)
             .filter(
-                DatasetVersion.filename == filename
+                DatasetVersion.filename == filename,
+                Dataset.project_id.is_not(None),
             )
             .order_by(
                 DatasetVersion.version_number.desc()
@@ -974,7 +1193,8 @@ def get_dataset_versions(filename: str):
             .all()
         )
 
-        return [
+        permission_service = ProjectPermissionService(database_session)
+        accessible_versions = [
             {
                 "id": version.id,
                 "filename": version.filename,
@@ -988,17 +1208,80 @@ def get_dataset_versions(filename: str):
                 "created_at": version.created_at,
             }
             for version in versions
+            if permission_service.user_can_view_project(
+                project_id=database_session.get(
+                    Dataset,
+                    version.dataset_id,
+                ).project_id,
+                user_id=current_user.id,
+            )
         ]
+        if versions and not accessible_versions:
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        return accessible_versions
 
     finally:
         database_session.close()
 
 
 @app.get("/quality-monitoring/{filename}")
-def get_quality_monitoring_history(filename: str):
-    from app.analytics.quality_monitoring_service import QualityMonitoringService
-
-    return {
-        "filename": filename,
-        "history": QualityMonitoringService.history(filename),
-    }
+def get_quality_monitoring_history(
+    filename: str,
+    current_user: User = Depends(get_current_user),
+):
+    database_session = SessionLocal()
+    try:
+        datasets = (
+            database_session.query(Dataset)
+            .join(
+                DatasetVersion,
+                DatasetVersion.dataset_id == Dataset.id,
+            )
+            .filter(
+                Dataset.filename == filename,
+                Dataset.project_id.is_not(None),
+            )
+            .distinct()
+            .all()
+        )
+        permission_service = ProjectPermissionService(database_session)
+        allowed_dataset_ids = {
+            dataset.id
+            for dataset in datasets
+            if permission_service.user_can_view_project(
+                project_id=dataset.project_id,
+                user_id=current_user.id,
+            )
+        }
+        if datasets and not allowed_dataset_ids:
+            raise HTTPException(status_code=404, detail="Dataset not found.")
+        snapshots = (
+            database_session.query(QualityMonitoringSnapshot)
+            .filter(
+                QualityMonitoringSnapshot.dataset_id.in_(
+                    allowed_dataset_ids
+                )
+            )
+            .order_by(QualityMonitoringSnapshot.version_number.asc())
+            .all()
+            if allowed_dataset_ids
+            else []
+        )
+        return {
+            "filename": filename,
+            "history": [
+                {
+                    "dataset_id": snapshot.dataset_id,
+                    "version_number": snapshot.version_number,
+                    "quality_score": snapshot.quality_score,
+                    "grade": snapshot.grade,
+                    "metrics": snapshot.metrics,
+                    "summary": snapshot.summary,
+                    "issues": snapshot.issues,
+                    "created_at": snapshot.created_at,
+                }
+                for snapshot in snapshots
+            ],
+        }
+    finally:
+        database_session.close()

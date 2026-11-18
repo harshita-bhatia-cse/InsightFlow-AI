@@ -7,6 +7,117 @@ from streamlit_local_storage import LocalStorage
 
 API_URL = "http://127.0.0.1:8000"
 st.set_page_config(page_title="InsightFlow AI", page_icon="📊", layout="wide")
+st.markdown(
+    """
+    <style>
+    .stApp {
+        background: #07152f;
+    }
+
+    [data-testid="stSidebar"] {
+        background: #06122a;
+        border-right: 1px solid #173a70;
+    }
+
+    [data-testid="stSidebar"] * {
+        color: #e8f0ff;
+    }
+
+    .dashboard-title {
+        font-size: 2.4rem;
+        font-weight: 700;
+        color: #f8fbff;
+        margin-bottom: 0.2rem;
+    }
+
+    .dashboard-subtitle {
+        color: #8ca6c9;
+        font-size: 1rem;
+        margin-bottom: 1.5rem;
+    }
+
+    .section-title {
+        color: #f8fbff;
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-top: 1rem;
+        margin-bottom: 0.75rem;
+    }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(135deg, #0d2c5c, #0a1f43);
+        border: 1px solid #164887;
+        border-radius: 14px;
+        padding: 1rem;
+        min-height: 118px;
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+    }
+
+    div[data-testid="stMetricLabel"] {
+        color: #9db7dc;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #ffffff;
+    }
+
+    div[data-testid="stMetricDelta"] {
+        color: #38d996;
+    }
+
+    .welcome-card {
+        background: linear-gradient(135deg, #123d79, #0b2550);
+        border: 1px solid #1c5eaa;
+        border-radius: 16px;
+        padding: 1.4rem;
+        min-height: 170px;
+    }
+
+    .welcome-card h2 {
+        color: #ffffff;
+        margin-bottom: 0.5rem;
+    }
+
+    .welcome-card p {
+        color: #b9cbea;
+        margin-bottom: 0;
+    }
+
+    .info-card {
+        background: #0a2045;
+        border: 1px solid #17457f;
+        border-radius: 16px;
+        padding: 1.2rem;
+        min-height: 170px;
+    }
+
+    .info-card h3 {
+        color: #ffffff;
+        margin-bottom: 0.7rem;
+    }
+
+    .info-card p {
+        color: #b9cbea;
+        margin: 0.25rem 0;
+    }
+
+    .stButton > button {
+        border-radius: 8px;
+        border: 1px solid #256dcc;
+        background: #0e4fa8;
+        color: white;
+    }
+
+    .stButton > button:hover {
+        border-color: #65a9ff;
+        background: #1765c4;
+        color: white;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 
 local_storage = LocalStorage()
 HISTORY_KEY = "insightflow_upload_history"
@@ -64,9 +175,57 @@ def api(endpoint: str):
         response.raise_for_status()
         return response.json()
     except requests.RequestException as error:
-        st.error(f"API request failed: {error}")
+        if error.response is not None:
+            try:
+                detail = error.response.json().get(
+                    "detail",
+                    "API request failed.",
+                )
+            except ValueError:
+                detail = "API request failed."
+
+            st.error(detail)
+        else:
+            st.error(f"API request failed: {error}")
+
         return None
 
+
+def api_write(
+    method: str,
+    endpoint: str,
+    payload: dict | None = None,
+):
+    try:
+        response = requests.request(
+            method=method,
+            url=f"{API_URL}{endpoint}",
+            headers=auth_headers(),
+            json=payload,
+            timeout=15,
+        )
+        response.raise_for_status()
+
+        if response.status_code == 204:
+            return True
+
+        return response.json()
+
+    except requests.RequestException as error:
+        if error.response is not None:
+            try:
+                detail = error.response.json().get(
+                    "detail",
+                    "Request failed.",
+                )
+            except ValueError:
+                detail = "Request failed."
+
+            st.error(detail)
+        else:
+            st.error(f"Request failed: {error}")
+
+        return None
 
 def upload_csv(uploaded_file):
     project_id = st.session_state["selected_project_id"]
@@ -92,16 +251,48 @@ def upload_csv(uploaded_file):
 
 
 def login(email: str, password: str) -> bool:
+    if not email.strip():
+        st.error("Email is required.")
+        return False
+
+    if not password:
+        st.error("Password is required.")
+        return False
+
     try:
         response = requests.post(
             f"{API_URL}/auth/login",
-            json={"email": email, "password": password},
+            json={
+                "email": email.strip(),
+                "password": password,
+            },
             timeout=15,
         )
         response.raise_for_status()
     except requests.RequestException as error:
-        st.error(f"Login failed: {error}")
+        if error.response is not None:
+            try:
+                detail = error.response.json().get(
+                    "detail",
+                    "Login failed.",
+                )
+            except ValueError:
+                detail = "Login failed."
+
+            st.error(f"Login failed: {detail}")
+        else:
+            st.error(f"Login failed: {error}")
+
         return False
+
+    data = response.json()
+
+    st.session_state["access_token"] = data["access_token"]
+    st.session_state["current_user"] = data["user"]
+
+    st.cache_data.clear()
+
+    return True
 
 def register(
     email: str,
@@ -164,11 +355,8 @@ def register(
 
     return True
 
-    data = response.json()
-    st.session_state["access_token"] = data["access_token"]
-    st.session_state["current_user"] = data["user"]
-    st.cache_data.clear()
-    return True
+    
+
 
 
 def chart(items, title, x="name", y="count"):
@@ -236,8 +424,17 @@ def render_action(item, kind):
         st.info(message)
 
 
-st.title("InsightFlow AI")
-st.caption("Executive Analytics Dashboard")
+st.markdown(
+    '<div class="dashboard-title">InsightFlow AI</div>',
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    '<div class="dashboard-subtitle">'
+    "Executive analytics and data quality workspace"
+    "</div>",
+    unsafe_allow_html=True,
+)
 
 if "access_token" not in st.session_state:
     st.subheader("Welcome to InsightFlow AI")
@@ -397,7 +594,7 @@ selected_id = st.sidebar.selectbox(
     format_func=lambda value: f"{catalog.loc[catalog['id'] == value, 'filename'].iloc[0]} (ID {value})",
 )
 page = st.sidebar.radio(
-    "Analytics page",
+    "Workspace",
     [
         "Executive Dashboard",
         "Dataset Profile",
@@ -407,6 +604,7 @@ page = st.sidebar.radio(
         "Trends",
         "Insights",
         "Recommendations",
+        "Member Management",
     ],
 )
 if page == "Executive Dashboard":
@@ -414,198 +612,194 @@ if page == "Executive Dashboard":
         catalog["id"] == selected_id
     ].iloc[0]
 
-    kpis = api(
-        f"/analytics/kpis/{selected_id}"
-    )
-
-    quality = api(
-        f"/analytics/quality/{selected_id}"
-    )
-
-    trends = api(
-        f"/analytics/trends/{selected_id}"
-    )
-
-    insights = api(
-        f"/analytics/insights/{selected_id}"
-    )
-
+    kpis = api(f"/analytics/kpis/{selected_id}")
+    quality = api(f"/analytics/quality/{selected_id}")
+    trends = api(f"/analytics/trends/{selected_id}")
+    insights = api(f"/analytics/insights/{selected_id}")
     recommendations = api(
         f"/analytics/recommendations/{selected_id}"
     )
 
-    st.subheader("Executive Overview")
+    st.markdown(
+        '<div class="section-title">Overview</div>',
+        unsafe_allow_html=True,
+    )
 
     st.caption(
-        f"Dataset: {dataset['filename']}  |  "
-        f"Loaded: {dataset.get('rows_count', 'n/a'):,} rows  |  "
+        f"Selected dataset: {dataset['filename']}  |  "
         f"Dataset ID: {selected_id}"
     )
 
     if kpis:
-        metric_columns = st.columns(5)
+        metric_one, metric_two, metric_three, metric_four = st.columns(4)
 
-        metric_columns[0].metric(
+        metric_one.metric(
             "Total Tasks",
-            f"{kpis['total_tasks']:,}",
+            f"{kpis.get('total_tasks', 0):,}",
         )
 
-        metric_columns[1].metric(
+        metric_two.metric(
             "Completion Rate",
-            f"{kpis['completion_rate']:.1f}%",
-            f"{kpis['completed_tasks']:,} completed",
+            f"{kpis.get('completion_rate', 0):.1f}%",
+            f"{kpis.get('completed_tasks', 0):,} completed",
         )
 
-        metric_columns[2].metric(
+        metric_three.metric(
             "Pending Tasks",
-            f"{kpis['pending_tasks']:,}",
-            f"{kpis['pending_rate']:.1f}% of total",
+            f"{kpis.get('pending_tasks', 0):,}",
+            f"{kpis.get('pending_rate', 0):.1f}% of total",
             delta_color="inverse",
         )
 
-        metric_columns[3].metric(
-            "High-Priority Pending",
-            f"{kpis['high_priority_pending_tasks']:,}",
-            delta_color="inverse",
-        )
-
-        metric_columns[4].metric(
+        metric_four.metric(
             "Estimated Hours",
-            f"{kpis['total_estimated_hours']:,.1f}",
+            f"{kpis.get('total_estimated_hours', 0):,.1f}",
         )
 
-        left, right = st.columns(
-            [1, 1.5]
+    st.write("")
+
+    welcome_column, quality_column = st.columns([1.35, 1])
+
+    with welcome_column:
+        username = current_user.get("username", "User")
+
+        st.markdown(
+            f"""
+            <div class="welcome-card">
+                <h2>Welcome back, {username}</h2>
+                <p>
+                    Monitor your project data, quality, workload,
+                    and analytics from one workspace.
+                </p>
+                <p>
+                    Current dataset: <strong>{dataset['filename']}</strong>
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
-        with left:
-            completion = pd.DataFrame(
-                [
-                    {
-                        "name": "Completed",
-                        "count": kpis[
-                            "completed_tasks"
-                        ],
-                    },
-                    {
-                        "name": "Pending",
-                        "count": kpis[
-                            "pending_tasks"
-                        ],
-                    },
-                ]
+    with quality_column:
+        quality_score = 0
+        quality_grade = "N/A"
+        quarantine_rate = 0
+
+        if quality:
+            quality_score = quality.get("quality_score", 0)
+            quality_grade = quality.get("grade", "N/A")
+            quality_metrics = quality.get("metrics", {})
+            quarantine_rate = quality_metrics.get(
+                "quarantine_rate",
+                0,
             )
 
-            donut_chart(
-                completion.to_dict(
-                    "records"
-                ),
-                "Delivery Status",
-            )
+        st.markdown(
+            f"""
+            <div class="info-card">
+                <h3>Data Quality</h3>
+                <p><strong>Score:</strong> {quality_score:.1f}/100</p>
+                <p><strong>Grade:</strong> {quality_grade}</p>
+                <p><strong>Quarantine rate:</strong> {quarantine_rate:.1f}%</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        with right:
+    st.write("")
+
+    chart_column, status_column = st.columns([1.4, 1])
+
+    with chart_column:
+        st.markdown(
+            '<div class="section-title">Workload overview</div>',
+            unsafe_allow_html=True,
+        )
+
+        if kpis:
             chart(
-                kpis[
-                    "layer_workload_distribution"
-                ],
+                kpis.get(
+                    "layer_workload_distribution",
+                    [],
+                ),
                 "Estimated Workload by Layer",
                 y="estimated_hours",
             )
-
-    st.divider()
-
-    quality_column, status_column = st.columns(
-        [1, 1.5]
-    )
-
-    with quality_column:
-        if quality:
-            quality_gauge(
-                quality.get(
-                    "quality_score",
-                    0,
-                )
-            )
-
-            quality_metrics = quality.get(
-                "metrics",
-                {},
-            )
-
-            st.metric(
-                "Quality Grade",
-                quality.get(
-                    "grade",
-                    "N/A",
-                ),
-                (
-                    f"Quarantine: "
-                    f"{quality_metrics.get(
-                        'quarantine_rate',
-                        0,
-                    ):.1f}%"
-                ),
-            )
+        else:
+            st.info("Workload data is not available.")
 
     with status_column:
-        if trends:
+        st.markdown(
+            '<div class="section-title">Task status</div>',
+            unsafe_allow_html=True,
+        )
+
+        if kpis:
+            completion_data = [
+                {
+                    "name": "Completed",
+                    "count": kpis.get(
+                        "completed_tasks",
+                        0,
+                    ),
+                },
+                {
+                    "name": "Pending",
+                    "count": kpis.get(
+                        "pending_tasks",
+                        0,
+                    ),
+                },
+            ]
+
             donut_chart(
-                trends.get(
-                    "status_trends",
-                    [],
-                ),
-                "Task Status Mix",
+                completion_data,
+                "Delivery Status",
             )
+        else:
+            st.info("Task status data is not available.")
 
-    action_column, recommendation_column = st.columns(
-        2
-    )
+    st.write("")
 
-    with action_column:
-        st.subheader("Key Insights")
+    insight_column, recommendation_column = st.columns(2)
+
+    with insight_column:
+        st.markdown(
+            '<div class="section-title">Key insights</div>',
+            unsafe_allow_html=True,
+        )
 
         insight_items = (
-            insights.get(
-                "insights",
-                [],
-            )
+            insights.get("insights", [])
             if insights
             else []
         )
 
         if insight_items:
-            for item in insight_items[:5]:
-                render_action(
-                    item,
-                    "insight",
-                )
+            for item in insight_items[:3]:
+                render_action(item, "insight")
         else:
-            st.success(
-                "No immediate risks were detected."
-            )
+            st.success("No immediate risks were detected.")
 
     with recommendation_column:
-        st.subheader("Recommended Actions")
+        st.markdown(
+            '<div class="section-title">Recommended actions</div>',
+            unsafe_allow_html=True,
+        )
 
         recommendation_items = (
-            recommendations.get(
-                "recommendations",
-                [],
-            )
+            recommendations.get("recommendations", [])
             if recommendations
             else []
         )
 
         if recommendation_items:
-            for item in recommendation_items[:5]:
+            for item in recommendation_items[:3]:
                 render_action(
                     item,
                     "recommendation",
                 )
         else:
-            st.success(
-                "No recommendations are pending."
-            )
+            st.success("No recommendations are pending.")
 elif page == "Dataset Profile":
     data = api(f"/profiles/{selected_id}")
     if data:
@@ -809,3 +1003,159 @@ elif page == "Recommendations":
         for item in data["recommendations"]:
             st.markdown(f"**{item['priority'].title()} priority — {item['recommendation']}**  \n{item['rationale']}")
         if not data["recommendations"]: st.info("No recommendations were generated.")
+
+elif page == "Member Management":
+        st.subheader("Project Member Management")
+    
+        st.caption(
+            "Manage users who can access the selected project."
+        )
+    
+        project_name = next(
+            (
+                project["name"]
+                for project in projects
+                if project["id"] == selected_project_id
+            ),
+            f"Project {selected_project_id}",
+        )
+    
+        st.markdown(
+            f"### {project_name}"
+        )
+    
+        members_endpoint = (
+            f"/api/permissions/projects/"
+            f"{selected_project_id}/members"
+        )
+    
+        members = api(members_endpoint)
+    
+        if members is None:
+            st.warning(
+                "Only the project owner can manage members, "
+                "or the member list could not be loaded."
+            )
+        else:
+            st.markdown("#### Current members")
+    
+            if not members:
+                st.info(
+                    "This project does not have any additional members."
+                )
+            else:
+                for member in members:
+                    member_id = member["user_id"]
+                    member_role = member["role"]
+    
+                    member_column, role_column, action_column = st.columns(
+                        [2, 1.5, 1]
+                    )
+    
+                    member_column.write(
+                        f"User ID: `{member_id}`"
+                    )
+    
+                    with role_column:
+                        updated_role = st.selectbox(
+                            "Role",
+                            [
+                                "viewer",
+                                "analyst",
+                                "editor",
+                                "owner",
+                            ],
+                            index=[
+                                "viewer",
+                                "analyst",
+                                "editor",
+                                "owner",
+                            ].index(member_role),
+                            key=f"role_{selected_project_id}_{member_id}",
+                            label_visibility="collapsed",
+                        )
+    
+                    with action_column:
+                        if st.button(
+                            "Update",
+                            key=f"update_{selected_project_id}_{member_id}",
+                        ):
+                            result = api_write(
+                                method="PATCH",
+                                endpoint=(
+                                    f"{members_endpoint}/{member_id}"
+                                ),
+                                payload={
+                                    "role": updated_role,
+                                },
+                            )
+    
+                            if result is not None:
+                                st.success(
+                                    f"User {member_id} role updated."
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
+    
+                        if st.button(
+                            "Remove",
+                            key=f"remove_{selected_project_id}_{member_id}",
+                        ):
+                            result = api_write(
+                                method="DELETE",
+                                endpoint=(
+                                    f"{members_endpoint}/{member_id}"
+                                ),
+                            )
+    
+                            if result is not None:
+                                st.success(
+                                    f"User {member_id} removed."
+                                )
+                                st.cache_data.clear()
+                                st.rerun()
+    
+            st.divider()
+    
+            st.markdown("#### Add a project member")
+    
+            with st.form(
+                f"add_member_form_{selected_project_id}"
+            ):
+                user_id = st.number_input(
+                    "User ID",
+                    min_value=1,
+                    step=1,
+                    value=1,
+                )
+    
+                role = st.selectbox(
+                    "Project role",
+                    [
+                        "viewer",
+                        "analyst",
+                        "editor",
+                        "owner",
+                    ],
+                )
+    
+                add_member_submitted = st.form_submit_button(
+                    "Add member"
+                )
+    
+            if add_member_submitted:
+                result = api_write(
+                    method="POST",
+                    endpoint=members_endpoint,
+                    payload={
+                        "user_id": int(user_id),
+                        "role": role,
+                    },
+                )
+    
+                if result is not None:
+                    st.success(
+                        f"User {int(user_id)} added as {role}."
+                    )
+                    st.cache_data.clear()
+                    st.rerun()    

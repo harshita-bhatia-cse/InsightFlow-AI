@@ -164,6 +164,23 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=20)
+
+
+class PasswordResetRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=255)
+
+
+class PasswordResetConfirmRequest(BaseModel):
+    reset_token: str = Field(..., min_length=20)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+
+class AdminUserRoleUpdate(BaseModel):
+    role: str = Field(..., min_length=1, max_length=30)
+
+
 class UserResponse(BaseModel):
     id: int
     email: str
@@ -183,5 +200,6 @@ class WorkspaceResponse(BaseModel):
     created_at: datetime
 class AuthTokenResponse(BaseModel):
     access_token: str
+    refresh_token: str | None = None
     token_type: str = "bearer"
     user: UserResponse

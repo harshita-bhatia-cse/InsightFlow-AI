@@ -760,3 +760,90 @@ Layer 3 is functionally complete. The recommended next phase is production harde
 Use this as the compact continuation brief:
 
 > InsightFlow AI has completed Layer 1 ingestion, Layer 2 analytics, and the main Layer 3 multi-tenant ownership and permission system. Authentication, workspaces, projects, dataset ownership, project members, role checks, project-aware uploads, dataset access, analytics access control, and upload restrictions are implemented. Roles are viewer, analyst, editor, and owner. Viewer and analyst can view datasets and analytics. Editor and owner can upload. Owner manages project members. The complete test suite currently passes with 44 tests. Continue with production hardening: protect or consolidate legacy routes, add Alembic migrations, extract the upload pipeline from `app/main.py`, and add audit/invitation workflows.
+
+
+
+LAYER 4
+
+alembic.ini is the primary configuration file for Alembic, the database migration tool used with SQLAlchemy in Python. 
+It is automatically generated when you initialize an environment via the alembic init command and controls migration paths, database connection strings, file naming conventions, and logging
+
+Layer 3 already has registration, login, password hashing, and access tokens.
+
+Layer 4 improves this with:
+
+Short-lived access tokens
+Refresh tokens
+Token rotation
+Logout and session revocation
+Expired-token handling
+Password-reset workflow
+Stronger password policies
+Secret-key configuration and rotation
+The purpose is to prevent stolen or expired credentials from being used indefinitely.
+
+3. Complete authorization and tenant isolation
+Layer 3 contains workspace, project, dataset, and role permissions.
+
+Layer 4 checks every endpoint to ensure that:
+
+Users cannot access another tenant’s data
+Viewers cannot perform editor actions
+Members cannot bypass restrictions through legacy routes
+Dataset reassignment requires permission
+Dataset deletion requires permission
+The final project owner cannot be removed accidentally
+Administrative operations are properly protected
+This is where you verify that permissions are enforced in the backend, not only in the dashboard.
+
+4. Audit logging
+Layer 4 records important actions, such as:
+
+Successful and failed logins
+Dataset uploads
+Workspace creation
+Project deletion
+Member addition
+Role changes
+Dataset reassignment
+Permission-denied attempts
+Password resets
+An audit record might contain:
+actor_user_id
+action
+resource_type
+resource_id
+timestamp
+outcome
+request_id
+
+5. Workspace collaboration
+Layer 3 has project-level members.
+
+Layer 4 expands collaboration with:
+
+Workspace members
+Workspace roles
+Invitations
+Invitation expiration
+Invitation acceptance/rejection
+Invitation revocation
+Secure invitation tokens
+Configurable email delivery
+This turns the project from a mostly personal system into a collaboration platform.
+
+7. Observability and reliability
+Layer 4 adds tools to understand what is happening in production:
+
+Structured logs
+Request IDs
+Liveness health checks
+Readiness health checks
+Request-duration metrics
+Upload-failure metrics
+Database health monitoring
+Graceful shutdown
+Safe retry behavior
+Better error reporting
+
+

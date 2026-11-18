@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.auth import get_current_user
@@ -9,6 +9,7 @@ from app.datasets.schemas import (
     DatasetResponse,
 )
 from app.datasets.services import DatasetService
+from app.audit.service import record_event
 
 
 router = APIRouter()
@@ -29,6 +30,7 @@ def get_db():
 def assign_dataset_to_project(
     dataset_id: int,
     payload: DatasetProjectAssignment,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -48,6 +50,20 @@ def assign_dataset_to_project(
                 "or project is not owned by the current user."
             ),
         )
+
+    record_event(
+        db,
+        actor_user_id=current_user.id,
+        action="dataset.reassign",
+        resource_type="dataset",
+        resource_id=str(dataset.id),
+        outcome="success",
+        request_id=request.state.request_id,
+        metadata={
+            "project_id": payload.project_id,
+        },
+    )
+    db.commit()
 
     return dataset
 
